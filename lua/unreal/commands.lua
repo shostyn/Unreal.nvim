@@ -107,6 +107,7 @@ if not vim.g.unrealnvim_loaded then
         prjName = nil, 
         targetNameSuffix = nil,
         prjDir = nil,
+	prjPath = nil,
         tasks = {},
         currentTask = "",
         ubtPath = "",
@@ -148,6 +149,7 @@ function Commands:Inspect(objToInspect)
 
     if not self._inspect then
         local inspect_path = vim.fn.stdpath("data") .. "/site/pack/packer/start/inspect.lua/inspect.lua"
+	print(inspect_path)
         self._inspect = loadfile(inspect_path)(Commands._inspect)
         if  self._inspect then
             log("Inspect loaded.")
@@ -273,7 +275,7 @@ function Commands._GetDefaultProjectNameAndDir(filepath)
         return nil, nil
     end
     local projectName = vim.fn.fnamemodify(uprojectPath, ":t:r")
-    return projectName, projectDir
+    return projectName, projectDir, uprojectPath
 end
 
 local CurrentCompileCommandsTargetFilePath = ""
@@ -581,10 +583,11 @@ function Stage_UbtGenCmd()
         callback = FuncBind(DispatchUnrealnvimCb, "headers")
     })
 
+
     local cmd = CurrentGenData.ubtPath .. " -project=" ..
-        CurrentGenData.projectPath .. " " .. CurrentGenData.target.UbtExtraFlags .. " " ..
-        CurrentGenData.prjName .. CurrentGenData.targetNameSuffix .. " " .. CurrentGenData.target.Configuration .. " " ..
-        CurrentGenData.target.PlatformName .. " -headers"
+	CurrentGenData.prjPath .. " " .. CurrentGenData.target.UbtExtraFlags .. " " ..
+	CurrentGenData.target.TargetName .. " " .. CurrentGenData.target.Configuration .. " " ..
+	CurrentGenData.target.PlatformName .. " -headers"
 
     vim.cmd("compiler msvc")
     vim.cmd("Dispatch " .. cmd)
@@ -593,7 +596,7 @@ end
 function Stage_GenHeadersCompleted()
     PrintAndLogMessage("Finished generating header files with Unreal Header Tool...")
     vim.api.nvim_command('autocmd! ShellCmdPost * lua DispatchUnrealnvimCb()')
-    vim.api.nvim_command('LspRestart')
+    -- vim.api.nvim_command('LspRestart')
     Commands.EndTask("headers")
     Commands.EndTask("final")
     Commands:SetCurrentAnimation("kirbyIdle")
@@ -635,9 +638,8 @@ function DispatchCallbackCoroutine(data)
 end
 
 function PromptBuildTargetIndex()
-    print("target to build:")
     for i, x in ipairs(CurrentGenData.config.Targets) do
-        local configName = x.Configuration
+        local configName = x.TargetName .. "-" .. x.Configuration
         if x.withEditor then
             configName = configName .. "-Editor"
         end
@@ -648,7 +650,7 @@ end
 
 function Commands.GetProjectName()
     local current_file_path = vim.api.nvim_buf_get_name(0)
-    local prjName, _ = Commands._GetDefaultProjectNameAndDir(current_file_path)
+    local prjName, _, _ = Commands._GetDefaultProjectNameAndDir(current_file_path)
     if not prjName  then
         return "" --"<Unknown.uproject>"
     end
@@ -659,7 +661,7 @@ end
 function InitializeCurrentGenData()
     PrintAndLogMessage("initializing")
     local current_file_path = vim.api.nvim_buf_get_name(0)
-    CurrentGenData.prjName, CurrentGenData.prjDir = Commands._GetDefaultProjectNameAndDir(current_file_path)
+    CurrentGenData.prjName, CurrentGenData.prjDir, CurrentGenData.prjPath = Commands._GetDefaultProjectNameAndDir(current_file_path)
     if not CurrentGenData.prjName then
         PrintAndLogMessage("could not find project. aborting")
         return false
@@ -673,7 +675,7 @@ function InitializeCurrentGenData()
         return false
     end
 
-    CurrentGenData.ubtPath = "\"" .. CurrentGenData.config.EngineDir .."/Engine/Binaries/DotNET/UnrealBuildTool/UnrealBuildTool.exe\""
+    CurrentGenData.ubtPath = "\"" .. CurrentGenData.config.EngineDir .."/Engine/Binaries/DotNET/UnrealBuildTool.exe\""
     CurrentGenData.ueBuildBat = "\"" .. CurrentGenData.config.EngineDir .."/Engine/Build/BatchFiles/Build.bat\""
     CurrentGenData.projectPath = "\"" .. CurrentGenData.prjDir .. "/" .. 
         CurrentGenData.prjName .. ".uproject\""
@@ -936,9 +938,10 @@ function Commands.generateCommandsCoroutine()
     Commands.ScheduleTask("gencmd")
     -- local cmd = CurrentGenData.ubtPath .. " -mode=GenerateClangDatabase -StaticAnalyzer=Clang -project=" ..
     local cmd = CurrentGenData.ubtPath .. " -mode=GenerateClangDatabase -project=" ..
-    CurrentGenData.projectPath .. " -game -engine " .. CurrentGenData.target.UbtExtraFlags .. " " ..
+    CurrentGenData.prjPath ..
+    " -game -engine " .. CurrentGenData.target.UbtExtraFlags .. " " ..
     editorFlag .. " " ..
-    CurrentGenData.prjName .. CurrentGenData.targetNameSuffix .. " " .. CurrentGenData.target.Configuration .. " " ..
+    CurrentGenData.target.TargetName .. " " .. CurrentGenData.target.Configuration .. " " ..
     CurrentGenData.target.PlatformName
 
     PrintAndLogMessage("Dispatching command:")
@@ -950,7 +953,7 @@ end
 
 function Commands.SetUnrealCD()
     local current_file_path = vim.api.nvim_buf_get_name(0)
-    local prjName, prjDir = Commands._GetDefaultProjectNameAndDir(current_file_path)
+    local prjName, prjDir, _ = Commands._GetDefaultProjectNameAndDir(current_file_path)
     if prjDir then
         vim.cmd("cd " .. prjDir)
     else
@@ -958,34 +961,36 @@ function Commands.SetUnrealCD()
     end
 end
 
-
 function Commands._check_extension_in_directory(directory, extension)
     local dir = vim.loop.fs_opendir(directory)
     if not dir then
         return nil
     end
 
-    handle = vim.loop.fs_scandir(directory) 
+    local handle = vim.loop.fs_scandir(directory)
     local name, typ
 
     while handle do
         name, typ = vim.loop.fs_scandir_next(handle)
         if not name then break end
+
         local ext = vim.fn.fnamemodify(name, ":e")
-        if ( ext == "uproject" ) then
-            return directory.."/"..name
+        if ext == extension then
+            -- Ensure we return the full absolute path of the file
+            return directory, vim.fn.fnamemodify(directory .. "/" .. name, ":p")
         end
     end
+
     return nil
 end
 
 function Commands._find_file_with_extension(filepath, extension)
     local current_dir = vim.fn.fnamemodify(filepath, ":h")
     local parent_dir = vim.fn.fnamemodify(current_dir, ":h")
-    -- Check if the file exists in the current directory
     local filename = vim.fn.fnamemodify(filepath, ":t")
 
-    local full_path = Commands._check_extension_in_directory(current_dir, extension)
+    -- Check if the file exists in the current directory
+    local current_dir, full_path = Commands._check_extension_in_directory(current_dir, extension)
     if full_path then
         return current_dir, full_path
     end
@@ -998,6 +1003,5 @@ function Commands._find_file_with_extension(filepath, extension)
     -- File not found
     return nil
 end
-
 
 return Commands
