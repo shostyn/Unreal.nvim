@@ -29,8 +29,19 @@ vim.api.nvim_create_user_command("UnrealBuild", function(opts)
 end, {
 })
 
+
+vim.api.nvim_create_user_command("UnrealBuildRun", function(opts)
+    require("unreal.commands").buildrun(opts)
+end, {
+})
+
 vim.api.nvim_create_user_command("UnrealRun", function(opts)
     require("unreal.commands").run(opts)
+end, {
+})
+
+vim.api.nvim_create_user_command("UnrealTarget", function(opts)
+    require("unreal.commands").setTarget(opts)
 end, {
 })
 

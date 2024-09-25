@@ -1,6 +1,6 @@
 
 local kConfigFileName = "UnrealNvim.json"
-local kCurrentVersion = "0.0.2"
+local kCurrentVersion = "0.0.3"
 
 local kLogLevel_Error = 1
 local kLogLevel_Warning = 2
@@ -177,9 +177,10 @@ end
 function Commands._CreateConfigFile(configFilePath, projectName)
     local configContents = [[
 {
-    "version" : "0.0.2",
+    "version" : "0.0.3",
     "_comment": "dont forget to escape backslashes in EnginePath",    
     "EngineDir": "",
+    "DefaultTarget: "-1",
     "Targets":  [
 
         {
@@ -680,7 +681,11 @@ function InitializeCurrentGenData()
     CurrentGenData.projectPath = "\"" .. CurrentGenData.prjDir .. "/" .. 
         CurrentGenData.prjName .. ".uproject\""
 
-    local desiredTargetIndex = PromptBuildTargetIndex()
+    local desiredTargetIndex = CurrentGenData.config.DefaultTarget
+    if desiredTargetIndex == -1 then
+	desiredTargetIndex = PromptBuildTargetIndex()
+    end
+    
     CurrentGenData.target = CurrentGenData.config.Targets[desiredTargetIndex]
 
     CurrentGenData.targetNameSuffix = ""
@@ -727,15 +732,24 @@ function Commands.BuildCoroutine()
             callback = BuildComplete 
         })
 
-    local cmd = CurrentGenData.ueBuildBat .. " " .. CurrentGenData.prjName .. 
-        CurrentGenData.targetNameSuffix .. " " ..
-        CurrentGenData.target.PlatformName  .. " " .. 
-        CurrentGenData.target.Configuration .. " " .. 
-        CurrentGenData.projectPath .. " -waitmutex"
+    local cmd = CurrentGenData.ueBuildBat .. " " ..
+	CurrentGenData.target.TargetName .. " " ..
+	CurrentGenData.target.PlatformName .. " " ..
+	CurrentGenData.target.Configuration .. " " ..
+    	CurrentGenData.prjPath .. " " ..
+	"-waitmutex"
 
     vim.cmd("compiler msvc")
     vim.cmd("Dispatch " .. cmd)
 
+end
+
+function DoBuild()
+    Commands.EnsureUpdateStarted();
+
+    Commands.ScheduleTask("build")
+    Commands:SetCurrentAnimation("kirbyFlip")
+    Commands.taskCoroutine = coroutine.create(Commands.BuildCoroutine)
 end
 
 function Commands.build(opts)
@@ -745,22 +759,10 @@ function Commands.build(opts)
     if not InitializeCurrentGenData() then
         return
     end
-    Commands.EnsureUpdateStarted();
-
-    Commands.ScheduleTask("build")
-    Commands:SetCurrentAnimation("kirbyFlip")
-    Commands.taskCoroutine = coroutine.create(Commands.BuildCoroutine)
-
+    DoBuild()
 end
 
-function Commands.run(opts)
-    CurrentGenData:ClearTasks()
-    PrintAndLogMessage("Running uproject")
-    
-    if not InitializeCurrentGenData() then
-        return
-    end
-
+function DoRun()
     Commands.ScheduleTask("run")
 
     local cmd = ""
@@ -773,10 +775,10 @@ function Commands.run(opts)
         end
 
         local executablePath = "\"".. CurrentGenData.config.EngineDir .. "/Engine/Binaries/" ..
-        CurrentGenData.target.PlatformName .. "/UnrealEditor" ..  editorSuffix .. ".exe\""
+        CurrentGenData.target.PlatformName .. "/UE4Editor" ..  editorSuffix .. ".exe\""
 
         cmd = executablePath .. " " ..
-        CurrentGenData.projectPath .. " -skipcompile"
+        CurrentGenData.prjPath .. " -skipcompile"
     else
         local exeSuffix = ""
         if CurrentGenData.target.Configuration ~= "Development" then
@@ -795,6 +797,62 @@ function Commands.run(opts)
     vim.cmd("Dispatch " .. cmd)
     Commands.EndTask("run")
     Commands.EndTask("final")
+end
+
+function Commands.run(opts)
+    CurrentGenData:ClearTasks()
+    PrintAndLogMessage("Running uproject")
+    
+    if not InitializeCurrentGenData() then
+        return
+    end
+    DoRun()
+end
+
+function Commands.buildrun(opts)
+    CurrentGenData:ClearTasks()
+    PrintAndLogMessage("Building uproject")
+    
+    if not InitializeCurrentGenData() then
+        return
+    end
+    DoBuild()
+
+    CurrentGenData:ClearTasks()
+    PrintAndLogMessage("Running uproject")
+    DoRun()
+end
+
+function Commands.setTarget(opts)
+    if not InitializeCurrentGenData() then
+        return
+    end
+
+    for i, x in ipairs(CurrentGenData.config.Targets) do
+        local configName = x.TargetName .. "-" .. x.Configuration
+        if x.withEditor then
+            configName = configName .. "-Editor"
+        end
+        print(tostring(i) .. ". " .. configName)
+    end
+
+    local desiredTargetIndex = tonumber(vim.fn.input "<number> : ")
+
+    if desiredTargetIndex and CurrentGenData.config.Targets[desiredTargetIndex] then
+        CurrentGenData.config.DefaultTarget = desiredTargetIndex
+        local configFilePath = CurrentGenData.prjDir.."/".. kConfigFileName
+        local file = io.open(configFilePath, "w")
+        if file then
+            file:write(vim.fn.json_encode(CurrentGenData.config))
+            file:close()
+            print("Default target set to: " .. desiredTargetIndex)
+        else
+            print("Error: Could not open config file for writing.")
+        end
+
+    else
+        print("Invalid target index.")
+    end
 end
 
 function Commands.EnsureUpdateStarted()
@@ -985,23 +1043,23 @@ function Commands._check_extension_in_directory(directory, extension)
 end
 
 function Commands._find_file_with_extension(filepath, extension)
-    local current_dir = vim.fn.fnamemodify(filepath, ":h")
-    local parent_dir = vim.fn.fnamemodify(current_dir, ":h")
-    local filename = vim.fn.fnamemodify(filepath, ":t")
+	local current_dir = vim.fn.fnamemodify(filepath, ":h")
+	local parent_dir = vim.fn.fnamemodify(current_dir, ":h")
+	local filename = vim.fn.fnamemodify(filepath, ":t")
 
-    -- Check if the file exists in the current directory
-    local current_dir, full_path = Commands._check_extension_in_directory(current_dir, extension)
-    if full_path then
-        return current_dir, full_path
-    end
+	-- Check if the file exists in the current directory
+	local current_dir, full_path = Commands._check_extension_in_directory(current_dir, extension)
+	if full_path then
+		return current_dir, full_path
+	end
 
-    -- Recursively check parent directories until we find the file or reach the root directory
-    if current_dir ~= parent_dir then
-        return Commands._find_file_with_extension(parent_dir .. "/" .. filename, extension)
-    end
+	-- Recursively check parent directories until we find the file or reach the root directory
+	if current_dir ~= parent_dir and vim.fn.fnamemodify(parent_dir, ":h") ~= parent_dir then
+		return Commands._find_file_with_extension(parent_dir .. "/" .. filename, extension)
+	end
 
-    -- File not found
-    return nil
+	-- File not found
+	return nil
 end
 
 return Commands
